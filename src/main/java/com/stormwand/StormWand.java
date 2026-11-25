@@ -3,15 +3,16 @@ package com.stormwand;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.Location;
+import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
-import org.bukkit.entity.Entity;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.PlayerDeathEvent;
+import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.persistence.PersistentDataType;
@@ -49,6 +50,8 @@ public final class StormWand extends JavaPlugin implements Listener {
 
         if (getCommand("stormwand") != null) {
             getCommand("stormwand").setExecutor(this);
+        } else {
+            getLogger().severe("Command 'stormwand' is missing from plugin.yml.");
         }
     }
 
@@ -67,13 +70,15 @@ public final class StormWand extends JavaPlugin implements Listener {
         }
 
         Set<UUID> victims = uniqueVictims.computeIfAbsent(
-                killer.getUniqueId(), ignored -> new HashSet<>()
+                killer.getUniqueId(),
+                ignored -> new HashSet<>()
         );
+
+        int oldStage = getStage(victims.size());
 
         if (victims.add(victim.getUniqueId())) {
             saveKills();
 
-            int oldStage = getStage(victims.size() - 1);
             int newStage = getStage(victims.size());
 
             if (newStage > oldStage) {
@@ -126,7 +131,13 @@ public final class StormWand extends JavaPlugin implements Listener {
                 return true;
             }
 
-            target.getInventory().addItem(createWand(target));
+            Map<Integer, ItemStack> leftover =
+                    target.getInventory().addItem(createWand(target));
+
+            for (ItemStack item : leftover.values()) {
+                target.getWorld().dropItemNaturally(target.getLocation(), item);
+            }
+
             sender.sendMessage(color("&aGave a Storm Wand to " + target.getName() + "."));
             target.sendMessage(color("&bYou received a Storm Wand!"));
             return true;
@@ -143,7 +154,7 @@ public final class StormWand extends JavaPlugin implements Listener {
     }
 
     private ItemStack createWand(Player owner) {
-        ItemStack item = new ItemStack(org.bukkit.Material.BLAZE_ROD);
+        ItemStack item = new ItemStack(Material.BLAZE_ROD);
         ItemMeta meta = item.getItemMeta();
 
         if (meta == null) {
@@ -151,21 +162,23 @@ public final class StormWand extends JavaPlugin implements Listener {
         }
 
         meta.setDisplayName(color(getConfig().getString(
-                "wand.name", "&b&lStorm Wand"
+                "wand.name",
+                "&b&lStorm Wand"
         )));
         meta.getPersistentDataContainer().set(
-                wandKey, PersistentDataType.BYTE, (byte) 1
+                wandKey,
+                PersistentDataType.BYTE,
+                (byte) 1
         );
 
-        int stage = getStage(getUniqueKillCount(owner));
-        applyStageModel(meta, stage);
-
+        applyStageModel(meta, getStage(getUniqueKillCount(owner)));
         item.setItemMeta(meta);
+
         return item;
     }
 
     private boolean isWand(ItemStack item) {
-        if (item == null || !item.hasItemMeta()) {
+        if (item == null || item.getType() == Material.AIR || !item.hasItemMeta()) {
             return false;
         }
 
@@ -179,8 +192,7 @@ public final class StormWand extends JavaPlugin implements Listener {
     private void updateWands(Player player) {
         ItemStack[] contents = player.getInventory().getContents();
 
-        for (int slot = 0; slot < contents.length; slot++) {
-            ItemStack item = contents[slot];
+        for (ItemStack item : contents) {
             if (!isWand(item)) {
                 continue;
             }
@@ -204,34 +216,42 @@ public final class StormWand extends JavaPlugin implements Listener {
     }
 
     private void applyStageModel(ItemMeta meta, int stage) {
-        String type = getConfig().getString(
-                "models.stage-" + stage + ".type", "custom-model-data"
-        );
+        String path = "models.stage-" + stage;
+        String type = getConfig().getString(path + ".type", "custom-model-data");
+        String value = getConfig().getString(path + ".value", "");
+
+        if (value.isBlank()) {
+            return;
+        }
 
         if ("item-model".equalsIgnoreCase(type)) {
-            String model = getConfig().getString(
-                    "models.stage-" + stage + ".value", ""
-            );
+            NamespacedKey modelKey = NamespacedKey.fromString(value);
 
-            if (!model.isBlank()) {
-                NamespacedKey key = NamespacedKey.fromString(model);
-                if (key != null) {
-                    meta.setItemModel(key);
-                }
+            if (modelKey == null) {
+                getLogger().warning("Invalid item-model key in config: " + value);
+                return;
             }
-        } else {
-            int modelData = getConfig().getInt(
-                    "models.stage-" + stage + ".value", 0
-            );
+
+            meta.setItemModel(modelKey);
+            return;
+        }
+
+        try {
+            int modelData = Integer.parseInt(value);
             if (modelData > 0) {
                 meta.setCustomModelData(modelData);
             }
+        } catch (NumberFormatException exception) {
+            getLogger().warning(
+                    "Invalid custom model data in config for " + path + ": " + value
+            );
         }
     }
 
     private int getUniqueKillCount(Player player) {
         return uniqueVictims.getOrDefault(
-                player.getUniqueId(), Set.of()
+                player.getUniqueId(),
+                Set.of()
         ).size();
     }
 
@@ -239,29 +259,27 @@ public final class StormWand extends JavaPlugin implements Listener {
         if (uniqueKills >= getConfig().getInt("progression.stage-3-kills", 3)) {
             return 3;
         }
+
         if (uniqueKills >= getConfig().getInt("progression.stage-2-kills", 1)) {
             return 2;
         }
+
         return 1;
     }
 
     @EventHandler
-    public void onWandUse(org.bukkit.event.player.PlayerInteractEvent event) {
-        Player player = event.getPlayer();
-        ItemStack item = event.getItem();
-
-        if (!isWand(item)) {
+    public void onWandUse(PlayerInteractEvent event) {
+        if (event.getAction() != org.bukkit.event.block.Action.RIGHT_CLICK_AIR
+                && event.getAction() != org.bukkit.event.block.Action.RIGHT_CLICK_BLOCK) {
             return;
         }
 
-        switch (event.getAction()) {
-            case RIGHT_CLICK_AIR, RIGHT_CLICK_BLOCK -> {
-                event.setCancelled(true);
-                cast(player);
-            }
-            default -> {
-            }
+        if (!isWand(event.getItem())) {
+            return;
         }
+
+        event.setCancelled(true);
+        cast(event.getPlayer());
     }
 
     private void cast(Player player) {
@@ -270,43 +288,45 @@ public final class StormWand extends JavaPlugin implements Listener {
             return;
         }
 
-        long now = System.currentTimeMillis();
         long cooldownMillis = getConfig().getLong("cooldown-seconds", 60) * 1000L;
         long readyAt = cooldowns.getOrDefault(player.getUniqueId(), 0L);
+        long now = System.currentTimeMillis();
 
         if (now < readyAt) {
-            long secondsLeft = (readyAt - now + 999) / 1000;
-            player.sendMessage(color("&cThe wand is cooling down for "
-                    + secondsLeft + " more seconds."));
+            long secondsLeft = (readyAt - now + 999L) / 1000L;
+            player.sendMessage(color(
+                    "&cThe wand is cooling down for " + secondsLeft + " more seconds."
+            ));
             return;
         }
 
-        int stage = getStage(getUniqueKillCount(player));
         double range = getConfig().getDouble("range-blocks", 30.0);
         LivingEntity target = findTarget(player, range);
 
         if (target == null) {
-            player.sendMessage(color("&cLook at a living target within "
-                    + (int) range + " blocks."));
+            player.sendMessage(color(
+                    "&cLook at a living target within " + (int) range + " blocks."
+            ));
             return;
         }
 
-        cooldowns.put(player.getUniqueId(), now + cooldownMillis);
+        int stage = getStage(getUniqueKillCount(player));
+        boolean damageEnabled = getConfig().getBoolean(
+                "lightning.damage-enabled",
+                false
+        );
 
         Location targetLocation = target.getLocation();
-        boolean damageEnabled = getConfig().getBoolean(
-                "lightning.damage-enabled", false
-        );
 
         if (damageEnabled) {
             target.getWorld().strikeLightning(targetLocation);
+
+            double extraDamage = getConfig().getDouble("lightning.damage", 4.0);
+            if (extraDamage > 0.0) {
+                target.damage(extraDamage, player);
+            }
         } else {
             target.getWorld().strikeLightningEffect(targetLocation);
-        }
-
-        double damage = getConfig().getDouble("lightning.damage", 4.0);
-        if (damageEnabled && damage > 0.0) {
-            target.damage(damage, player);
         }
 
         if (stage >= 2) {
@@ -317,49 +337,47 @@ public final class StormWand extends JavaPlugin implements Listener {
             applyWielderBuffs(player);
         }
 
+        cooldowns.put(player.getUniqueId(), now + cooldownMillis);
         player.sendMessage(color("&bStorm Wand cast!"));
     }
 
     private LivingEntity findTarget(Player player, double range) {
-        Location eye = player.getEyeLocation();
-        Vector direction = eye.getDirection();
+        Location eyeLocation = player.getEyeLocation();
+        Vector direction = eyeLocation.getDirection();
 
         RayTraceResult result = player.getWorld().rayTraceEntities(
-                eye,
+                eyeLocation,
                 direction,
                 range,
                 0.3,
-                entity -> entity instanceof LivingEntity
-                        && entity != player
+                entity -> entity instanceof LivingEntity && entity != player
         );
 
-        if (result == null || !(result.getHitEntity() instanceof LivingEntity living)) {
+        if (result == null || !(result.getHitEntity() instanceof LivingEntity target)) {
             return null;
         }
 
-        return living;
+        return target;
     }
 
     private void applyTargetDebuffs(LivingEntity target) {
-        int duration = getConfig().getInt("target-debuffs.duration-seconds", 10) * 20;
+        int durationTicks = getConfig().getInt(
+                "target-debuffs.duration-seconds",
+                10
+        ) * 20;
 
-        applyConfiguredEffect(
-                target,
-                "target-debuffs.slowness",
-                duration
-        );
-        applyConfiguredEffect(
-                target,
-                "target-debuffs.blindness",
-                duration
-        );
+        applyConfiguredEffect(target, "target-debuffs.slowness", durationTicks);
+        applyConfiguredEffect(target, "target-debuffs.blindness", durationTicks);
     }
 
     private void applyWielderBuffs(Player player) {
-        int duration = getConfig().getInt("wielder-buffs.duration-seconds", 10) * 20;
+        int durationTicks = getConfig().getInt(
+                "wielder-buffs.duration-seconds",
+                10
+        ) * 20;
 
-        applyConfiguredEffect(player, "wielder-buffs.speed", duration);
-        applyConfiguredEffect(player, "wielder-buffs.strength", duration);
+        applyConfiguredEffect(player, "wielder-buffs.speed", durationTicks);
+        applyConfiguredEffect(player, "wielder-buffs.strength", durationTicks);
     }
 
     private void applyConfiguredEffect(
@@ -370,22 +388,23 @@ public final class StormWand extends JavaPlugin implements Listener {
         String effectName = getConfig().getString(path + ".effect", "");
         int amplifier = Math.max(0, getConfig().getInt(path + ".amplifier", 0));
 
-        PotionEffectType type = PotionEffectType.getByName(
+        PotionEffectType effectType = PotionEffectType.getByName(
                 effectName.toUpperCase()
         );
 
-        if (type != null) {
-            entity.addPotionEffect(new PotionEffect(
-                    type,
-                    durationTicks,
-                    amplifier,
-                    true,
-                    true,
-                    true
-            ));
-        } else {
+        if (effectType == null) {
             getLogger().warning("Unknown potion effect at config path " + path);
+            return;
         }
+
+        entity.addPotionEffect(new PotionEffect(
+                effectType,
+                durationTicks,
+                amplifier,
+                true,
+                true,
+                true
+        ));
     }
 
     private void loadKills() {
@@ -394,14 +413,17 @@ public final class StormWand extends JavaPlugin implements Listener {
         }
 
         killsFile = new File(getDataFolder(), "kills.yml");
+
         if (!killsFile.exists()) {
             try {
                 if (!killsFile.createNewFile()) {
                     getLogger().warning("Could not create kills.yml.");
                 }
             } catch (IOException exception) {
-                getLogger().severe("Could not create kills.yml: "
-                        + exception.getMessage());
+                getLogger().severe(
+                        "Could not create kills.yml: " + exception.getMessage()
+                );
+                return;
             }
         }
 
@@ -413,18 +435,21 @@ public final class StormWand extends JavaPlugin implements Listener {
                 UUID killerId = UUID.fromString(playerId);
                 Set<UUID> victims = new HashSet<>();
 
-                List<String> savedVictims = killsConfig.getStringList(playerId);
-                for (String victimId : savedVictims) {
+                for (String victimId : killsConfig.getStringList(playerId)) {
                     try {
                         victims.add(UUID.fromString(victimId));
-                    } catch (IllegalArgumentException ignored) {
-                        getLogger().warning("Ignoring invalid victim UUID in kills.yml.");
+                    } catch (IllegalArgumentException exception) {
+                        getLogger().warning(
+                                "Ignoring invalid victim UUID in kills.yml."
+                        );
                     }
                 }
 
                 uniqueVictims.put(killerId, victims);
-            } catch (IllegalArgumentException ignored) {
-                getLogger().warning("Ignoring invalid player UUID in kills.yml.");
+            } catch (IllegalArgumentException exception) {
+                getLogger().warning(
+                        "Ignoring invalid player UUID in kills.yml."
+                );
             }
         }
     }
@@ -434,21 +459,21 @@ public final class StormWand extends JavaPlugin implements Listener {
             return;
         }
 
-        killsConfig.getKeys(false).forEach(killsConfig::set);
-
         for (Map.Entry<UUID, Set<UUID>> entry : uniqueVictims.entrySet()) {
-            List<String> victims = entry.getValue().stream()
+            List<String> victimIds = entry.getValue().stream()
                     .map(UUID::toString)
                     .sorted()
                     .toList();
-            killsConfig.set(entry.getKey().toString(), victims);
+
+            killsConfig.set(entry.getKey().toString(), victimIds);
         }
 
         try {
             killsConfig.save(killsFile);
         } catch (IOException exception) {
-            getLogger().severe("Could not save kills.yml: "
-                    + exception.getMessage());
+            getLogger().severe(
+                    "Could not save kills.yml: " + exception.getMessage()
+            );
         }
     }
 
