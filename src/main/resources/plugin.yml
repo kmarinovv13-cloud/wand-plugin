@@ -1,19 +1,23 @@
 name: StormWand
-version: 1.0.0
+version: '1.1.0'
 main: com.stormwand.StormWand
 api-version: '1.21'
+description: A wand that unlocks stronger abilities as you get player kills.
 commands:
   stormwand:
-    description: Give a Storm Wand or reload the plugin configuration.
-    usage: /stormwand <give <player>|reload>
+    description: Storm Wand commands
+    usage: /stormwand <give [player]|kills [player]|reset [player]|setkills <player> <number>|reload>
     aliases: [swand]
 permissions:
   stormwand.use:
-    description: Allows the player to use a Storm Wand.
+    description: Allows using the Storm Wand
     default: true
   stormwand.give:
-    description: Allows the player to give Storm Wands.
+    description: Allows giving the Storm Wand
     default: op
   stormwand.reload:
-    description: Allows the player to reload StormWand configuration.
+    description: Allows reloading the config
+    default: op
+  stormwand.admin:
+    description: Allows checking, resetting and setting other players' kills
     default: op
