@@ -1,33 +1,17 @@
 package com.stormwand;
 
-import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.format.TextDecoration;
-import net.kyori.adventure.text.minimessage.MiniMessage;
-import net.kyori.adventure.text.minimessage.tag.resolver.Placeholder;
-import net.kyori.adventure.text.minimessage.tag.resolver.TagResolver;
 import org.bukkit.Bukkit;
-import org.bukkit.FluidCollisionMode;
-import org.bukkit.GameMode;
+import org.bukkit.ChatColor;
 import org.bukkit.Location;
-import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
-import org.bukkit.command.PluginCommand;
-import org.bukkit.command.TabExecutor;
-import org.bukkit.configuration.ConfigurationSection;
-import org.bukkit.configuration.file.FileConfiguration;
-import org.bukkit.configuration.file.YamlConfiguration;
-import org.bukkit.entity.ArmorStand;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
-import org.bukkit.event.block.Action;
-import org.bukkit.event.entity.EntityDeathEvent;
-import org.bukkit.event.player.PlayerInteractEvent;
-import org.bukkit.inventory.EquipmentSlot;
+import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.persistence.PersistentDataType;
@@ -35,364 +19,440 @@ import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.potion.PotionEffect;
 import org.bukkit.potion.PotionEffectType;
 import org.bukkit.util.RayTraceResult;
+import org.bukkit.util.Vector;
 
 import java.io.File;
 import java.io.IOException;
-import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
-public final class StormWand extends JavaPlugin implements Listener, TabExecutor {
-
-    private static final MiniMessage MM = MiniMessage.miniMessage();
+public final class StormWand extends JavaPlugin implements Listener {
+    private final Map<UUID, Set<UUID>> uniqueVictims = new HashMap<>();
+    private final Map<UUID, Long> cooldowns = new HashMap<>();
 
     private NamespacedKey wandKey;
     private File killsFile;
-    private FileConfiguration killsData;
+    private org.bukkit.configuration.file.YamlConfiguration killsConfig;
 
     @Override
     public void onEnable() {
         saveDefaultConfig();
 
         wandKey = new NamespacedKey(this, "storm_wand");
-        killsFile = new File(getDataFolder(), "kills.yml");
-        if (!killsFile.exists()) {
-            try {
-                getDataFolder().mkdirs();
-                killsFile.createNewFile();
-            } catch (IOException e) {
-                getLogger().severe("Could not create kills.yml: " + e.getMessage());
-            }
-        }
-        killsData = YamlConfiguration.loadConfiguration(killsFile);
+        loadKills();
 
-        getServer().getPluginManager().registerEvents(this, this);
+        Bukkit.getPluginManager().registerEvents(this, this);
 
-        PluginCommand command = getCommand("stormwand");
-        if (command != null) {
-            command.setExecutor(this);
-            command.setTabCompleter(this);
+        if (getCommand("stormwand") != null) {
+            getCommand("stormwand").setExecutor(this);
         }
     }
 
-    private int getKills(Player player) {
-        return killsData.getInt(player.getUniqueId().toString(), 0);
-    }
-
-    private int getStage(int kills) {
-        if (kills >= 10) return 3;
-        if (kills >= 5) return 2;
-        return 1;
-    }
-
-    private void saveKills() {
-        try {
-            killsData.save(killsFile);
-        } catch (IOException e) {
-            getLogger().severe("Could not save kills.yml: " + e.getMessage());
-        }
-    }
-
-    @EventHandler
-    public void onEntityDeath(EntityDeathEvent event) {
-        Player killer = event.getEntity().getKiller();
-        if (killer == null) return;
-
-        UUID id = killer.getUniqueId();
-        int newKills = getKills(killer) + 1;
-        killsData.set(id.toString(), newKills);
+    @Override
+    public void onDisable() {
         saveKills();
-
-        // Update the model of any Storm Wands in the killer's inventory.
-        updateWands(killer, getStage(newKills));
-
-        if (newKills == 5 || newKills == 10) {
-            killer.sendMessage(Component.text(
-                    "Storm Wand upgraded to Stage " + getStage(newKills)
-                            + " after " + newKills + " kills!"));
-        }
-    }
-
-    private ItemStack createWand(int stage) {
-        FileConfiguration cfg = getConfig();
-
-        Material material = Material.matchMaterial(cfg.getString("wand.material", "BLAZE_ROD"));
-        if (material == null || material.isAir() || !material.isItem()) {
-            material = Material.BLAZE_ROD;
-        }
-
-        ItemStack item = new ItemStack(material);
-        ItemMeta meta = item.getItemMeta();
-
-        meta.displayName(noItalic(MM.deserialize(
-                cfg.getString("wand.name", "<gold>Storm Wand"))));
-
-        List<Component> lore = new ArrayList<>();
-        for (String line : cfg.getStringList("wand.lore")) {
-            lore.add(noItalic(MM.deserialize(line)));
-        }
-        meta.lore(lore);
-
-        if (cfg.getBoolean("wand.glow", true)) {
-            meta.setEnchantmentGlintOverride(true);
-        }
-
-        int modelData = cfg.getInt("wand.stages." + stage + ".custom-model-data", 0);
-        if (modelData > 0) {
-            meta.setCustomModelData(modelData);
-        }
-
-        setStageItemModel(meta, stage);
-        meta.getPersistentDataContainer().set(wandKey, PersistentDataType.BYTE, (byte) 1);
-        item.setItemMeta(meta);
-        return item;
-    }
-
-    private void setStageItemModel(ItemMeta meta, int stage) {
-        String model = getConfig().getString("wand.stages." + stage + ".item-model", "");
-        if (model == null || model.isBlank()) return;
-
-        NamespacedKey key = NamespacedKey.fromString(model.trim());
-        if (key == null) {
-            getLogger().warning("Invalid item model for wand stage " + stage + ": " + model);
-            return;
-        }
-        meta.setItemModel(key);
-    }
-
-    private void updateWands(Player player, int stage) {
-        ItemStack[] contents = player.getInventory().getContents();
-        for (int i = 0; i < contents.length; i++) {
-            ItemStack item = contents[i];
-            if (!isWand(item)) continue;
-
-            ItemMeta meta = item.getItemMeta();
-            int modelData = getConfig().getInt("wand.stages." + stage + ".custom-model-data", 0);
-            if (modelData > 0) {
-                meta.setCustomModelData(modelData);
-            }
-            setStageItemModel(meta, stage);
-            item.setItemMeta(meta);
-        }
-        player.getInventory().setContents(contents);
-    }
-
-    private boolean isWand(ItemStack item) {
-        return item != null
-                && item.hasItemMeta()
-                && item.getItemMeta().getPersistentDataContainer()
-                        .has(wandKey, PersistentDataType.BYTE);
-    }
-
-    private static Component noItalic(Component component) {
-        return component.decorationIfAbsent(
-                TextDecoration.ITALIC, TextDecoration.State.FALSE);
     }
 
     @EventHandler
-    public void onInteract(PlayerInteractEvent event) {
-        if (event.getHand() != EquipmentSlot.HAND) return;
+    public void onPlayerDeath(PlayerDeathEvent event) {
+        Player victim = event.getEntity();
+        Player killer = victim.getKiller();
 
-        Action action = event.getAction();
-        if (action != Action.RIGHT_CLICK_AIR && action != Action.RIGHT_CLICK_BLOCK) return;
-
-        Player player = event.getPlayer();
-        if (!isWand(player.getInventory().getItemInMainHand())) return;
-
-        event.setCancelled(true);
-        if (!player.hasPermission("stormwand.use")) return;
-
-        // Keep the model in sync if the player earned kills before receiving this wand.
-        updateWands(player, getStage(getKills(player)));
-        cast(player);
-    }
-
-    private void cast(Player player) {
-        FileConfiguration cfg = getConfig();
-        long now = System.currentTimeMillis();
-
-        long readyAt = getConfig().getLong(
-                "cooldowns." + player.getUniqueId(), 0L);
-        if (now < readyAt) {
-            long secondsLeft = (long) Math.ceil((readyAt - now) / 1000.0);
-            player.sendActionBar(message(
-                    "messages.on-cooldown",
-                    "<red>Storm Wand recharging: <yellow><seconds>s",
-                    Placeholder.unparsed("seconds", String.valueOf(secondsLeft))));
+        if (killer == null || killer.getUniqueId().equals(victim.getUniqueId())) {
             return;
         }
 
-        LivingEntity target = findTarget(player);
-        if (target == null && cfg.getBoolean("require-target", true)) {
-            player.sendActionBar(message("messages.no-target", "<gray>No target in range."));
-            return;
-        }
+        Set<UUID> victims = uniqueVictims.computeIfAbsent(
+                killer.getUniqueId(), ignored -> new HashSet<>()
+        );
 
-        int stage = getStage(getKills(player));
+        if (victims.add(victim.getUniqueId())) {
+            saveKills();
 
-        // Lightning is available from the start.
-        if (target != null) {
-            strike(player, target);
+            int oldStage = getStage(victims.size() - 1);
+            int newStage = getStage(victims.size());
 
-            // Stage 2: target debuffs, unlocked at 5 kills.
-            if (stage >= 2) {
-                applyEffects(target, cfg.getConfigurationSection("target-effects"));
+            if (newStage > oldStage) {
+                updateWands(killer);
+                killer.sendMessage(color(
+                        "&bYour Storm Wand has advanced to Stage " + newStage + "!"
+                ));
             }
         }
-
-        // Stage 3: wielder buffs, unlocked at 10 kills.
-        if (stage >= 3) {
-            applyEffects(player, cfg.getConfigurationSection("self-effects"));
-        }
-
-        long cooldownMillis = (long) (cfg.getDouble("cooldown-seconds", 60.0) * 1000.0);
-        getConfig().set("cooldowns." + player.getUniqueId(), now + cooldownMillis);
-        saveConfig();
-    }
-
-    private LivingEntity findTarget(Player player) {
-        FileConfiguration cfg = getConfig();
-        double range = cfg.getDouble("range", 30.0);
-        boolean hitPlayers = cfg.getBoolean("affect-players", true);
-        boolean hitMobs = cfg.getBoolean("affect-mobs", true);
-
-        Location eye = player.getEyeLocation();
-        RayTraceResult result = player.getWorld().rayTrace(
-                eye, eye.getDirection(), range, FluidCollisionMode.NEVER,
-                true, 0.3, entity -> {
-                    if (entity.equals(player) || !(entity instanceof LivingEntity)) return false;
-                    if (entity instanceof ArmorStand) return false;
-                    if (entity instanceof Player other) {
-                        return hitPlayers && other.getGameMode() != GameMode.SPECTATOR;
-                    }
-                    return hitMobs;
-                });
-
-        if (result == null) return null;
-        Entity hit = result.getHitEntity();
-        return hit instanceof LivingEntity living ? living : null;
-    }
-
-    private void strike(Player caster, LivingEntity target) {
-        FileConfiguration cfg = getConfig();
-        Location location = target.getLocation();
-
-        if (cfg.getBoolean("lightning.real-lightning", false)) {
-            target.getWorld().strikeLightning(location);
-        } else {
-            target.getWorld().strikeLightningEffect(location);
-            double damage = cfg.getDouble("lightning.damage", 4.0);
-            if (damage > 0) target.damage(damage, caster);
-        }
-    }
-
-    private void applyEffects(LivingEntity entity, ConfigurationSection section) {
-        if (section == null) return;
-
-        for (String name : section.getKeys(false)) {
-            ConfigurationSection effect = section.getConfigurationSection(name);
-            if (effect == null) continue;
-
-            PotionEffectType type;
-            try {
-                type = PotionEffectType.getByKey(
-                        NamespacedKey.minecraft(name.toLowerCase(Locale.ROOT)));
-            } catch (IllegalArgumentException e) {
-                type = null;
-            }
-
-            if (type == null) {
-                getLogger().warning("Unknown potion effect in config: " + name);
-                continue;
-            }
-
-            int ticks = (int) Math.round(
-                    effect.getDouble("duration-seconds", 10.0) * 20.0);
-            int amplifier = Math.max(1, effect.getInt("level", 1)) - 1;
-            if (ticks <= 0) continue;
-
-            entity.addPotionEffect(new PotionEffect(
-                    type, ticks, amplifier,
-                    effect.getBoolean("ambient", false),
-                    effect.getBoolean("particles", true),
-                    effect.getBoolean("icon", true)));
-        }
-    }
-
-    private Component message(String path, String fallback, TagResolver... resolvers) {
-        return MM.deserialize(getConfig().getString(path, fallback), resolvers);
     }
 
     @Override
     public boolean onCommand(
-            CommandSender sender, Command command, String label, String[] args) {
+            CommandSender sender,
+            Command command,
+            String label,
+            String[] args
+    ) {
         if (args.length == 0) {
-            sender.sendMessage(Component.text("Usage: /stormwand <give [player]|reload>"));
+            sendUsage(sender);
             return true;
         }
 
-        switch (args[0].toLowerCase(Locale.ROOT)) {
-            case "reload" -> {
-                if (!sender.hasPermission("stormwand.reload")) {
-                    sender.sendMessage(Component.text("You don't have permission to do that."));
-                    return true;
-                }
-                reloadConfig();
-                sender.sendMessage(Component.text("StormWand config reloaded."));
+        if (args[0].equalsIgnoreCase("reload")) {
+            if (!sender.hasPermission("stormwand.reload")) {
+                sender.sendMessage(color("&cYou do not have permission."));
+                return true;
             }
-            case "give" -> {
-                if (!sender.hasPermission("stormwand.give")) {
-                    sender.sendMessage(Component.text("You don't have permission to do that."));
-                    return true;
-                }
 
-                Player target;
-                if (args.length > 1) {
-                    target = Bukkit.getPlayerExact(args[1]);
-                } else if (sender instanceof Player self) {
-                    target = self;
-                } else {
-                    target = null;
-                }
-
-                if (target == null) {
-                    sender.sendMessage(Component.text(
-                            "Player not found. Usage: /stormwand give <player>"));
-                    return true;
-                }
-
-                int stage = getStage(getKills(target));
-                Map<Integer, ItemStack> leftover =
-                        target.getInventory().addItem(createWand(stage));
-                for (ItemStack extra : leftover.values()) {
-                    target.getWorld().dropItemNaturally(target.getLocation(), extra);
-                }
-                sender.sendMessage(Component.text(
-                        "Gave the Storm Wand to " + target.getName() + "."));
-            }
-            default -> sender.sendMessage(Component.text(
-                    "Usage: /stormwand <give [player]|reload>"));
+            reloadConfig();
+            updateAllOnlineWands();
+            sender.sendMessage(color("&aStormWand configuration reloaded."));
+            return true;
         }
+
+        if (args[0].equalsIgnoreCase("give")) {
+            if (!sender.hasPermission("stormwand.give")) {
+                sender.sendMessage(color("&cYou do not have permission."));
+                return true;
+            }
+
+            if (args.length < 2) {
+                sender.sendMessage(color("&cUsage: /stormwand give <player>"));
+                return true;
+            }
+
+            Player target = Bukkit.getPlayerExact(args[1]);
+            if (target == null) {
+                sender.sendMessage(color("&cThat player must be online."));
+                return true;
+            }
+
+            target.getInventory().addItem(createWand(target));
+            sender.sendMessage(color("&aGave a Storm Wand to " + target.getName() + "."));
+            target.sendMessage(color("&bYou received a Storm Wand!"));
+            return true;
+        }
+
+        sendUsage(sender);
         return true;
     }
 
-    @Override
-    public List<String> onTabComplete(
-            CommandSender sender, Command command, String alias, String[] args) {
-        if (args.length == 1) {
-            String typed = args[0].toLowerCase(Locale.ROOT);
-            return List.of("give", "reload").stream()
-                    .filter(s -> s.startsWith(typed)).toList();
+    private void sendUsage(CommandSender sender) {
+        sender.sendMessage(color("&bStormWand commands:"));
+        sender.sendMessage(color("&7/stormwand give <player>"));
+        sender.sendMessage(color("&7/stormwand reload"));
+    }
+
+    private ItemStack createWand(Player owner) {
+        ItemStack item = new ItemStack(org.bukkit.Material.BLAZE_ROD);
+        ItemMeta meta = item.getItemMeta();
+
+        if (meta == null) {
+            return item;
         }
-        if (args.length == 2 && args[0].equalsIgnoreCase("give")) {
-            String typed = args[1].toLowerCase(Locale.ROOT);
-            return Bukkit.getOnlinePlayers().stream()
-                    .map(Player::getName)
-                    .filter(name -> name.toLowerCase(Locale.ROOT).startsWith(typed))
+
+        meta.setDisplayName(color(getConfig().getString(
+                "wand.name", "&b&lStorm Wand"
+        )));
+        meta.getPersistentDataContainer().set(
+                wandKey, PersistentDataType.BYTE, (byte) 1
+        );
+
+        int stage = getStage(getUniqueKillCount(owner));
+        applyStageModel(meta, stage);
+
+        item.setItemMeta(meta);
+        return item;
+    }
+
+    private boolean isWand(ItemStack item) {
+        if (item == null || !item.hasItemMeta()) {
+            return false;
+        }
+
+        Byte marker = item.getItemMeta()
+                .getPersistentDataContainer()
+                .get(wandKey, PersistentDataType.BYTE);
+
+        return marker != null && marker == (byte) 1;
+    }
+
+    private void updateWands(Player player) {
+        ItemStack[] contents = player.getInventory().getContents();
+
+        for (int slot = 0; slot < contents.length; slot++) {
+            ItemStack item = contents[slot];
+            if (!isWand(item)) {
+                continue;
+            }
+
+            ItemMeta meta = item.getItemMeta();
+            if (meta == null) {
+                continue;
+            }
+
+            applyStageModel(meta, getStage(getUniqueKillCount(player)));
+            item.setItemMeta(meta);
+        }
+
+        player.getInventory().setContents(contents);
+    }
+
+    private void updateAllOnlineWands() {
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            updateWands(player);
+        }
+    }
+
+    private void applyStageModel(ItemMeta meta, int stage) {
+        String type = getConfig().getString(
+                "models.stage-" + stage + ".type", "custom-model-data"
+        );
+
+        if ("item-model".equalsIgnoreCase(type)) {
+            String model = getConfig().getString(
+                    "models.stage-" + stage + ".value", ""
+            );
+
+            if (!model.isBlank()) {
+                NamespacedKey key = NamespacedKey.fromString(model);
+                if (key != null) {
+                    meta.setItemModel(key);
+                }
+            }
+        } else {
+            int modelData = getConfig().getInt(
+                    "models.stage-" + stage + ".value", 0
+            );
+            if (modelData > 0) {
+                meta.setCustomModelData(modelData);
+            }
+        }
+    }
+
+    private int getUniqueKillCount(Player player) {
+        return uniqueVictims.getOrDefault(
+                player.getUniqueId(), Set.of()
+        ).size();
+    }
+
+    private int getStage(int uniqueKills) {
+        if (uniqueKills >= getConfig().getInt("progression.stage-3-kills", 3)) {
+            return 3;
+        }
+        if (uniqueKills >= getConfig().getInt("progression.stage-2-kills", 1)) {
+            return 2;
+        }
+        return 1;
+    }
+
+    @EventHandler
+    public void onWandUse(org.bukkit.event.player.PlayerInteractEvent event) {
+        Player player = event.getPlayer();
+        ItemStack item = event.getItem();
+
+        if (!isWand(item)) {
+            return;
+        }
+
+        switch (event.getAction()) {
+            case RIGHT_CLICK_AIR, RIGHT_CLICK_BLOCK -> {
+                event.setCancelled(true);
+                cast(player);
+            }
+            default -> {
+            }
+        }
+    }
+
+    private void cast(Player player) {
+        if (!player.hasPermission("stormwand.use")) {
+            player.sendMessage(color("&cYou do not have permission to use this wand."));
+            return;
+        }
+
+        long now = System.currentTimeMillis();
+        long cooldownMillis = getConfig().getLong("cooldown-seconds", 60) * 1000L;
+        long readyAt = cooldowns.getOrDefault(player.getUniqueId(), 0L);
+
+        if (now < readyAt) {
+            long secondsLeft = (readyAt - now + 999) / 1000;
+            player.sendMessage(color("&cThe wand is cooling down for "
+                    + secondsLeft + " more seconds."));
+            return;
+        }
+
+        int stage = getStage(getUniqueKillCount(player));
+        double range = getConfig().getDouble("range-blocks", 30.0);
+        LivingEntity target = findTarget(player, range);
+
+        if (target == null) {
+            player.sendMessage(color("&cLook at a living target within "
+                    + (int) range + " blocks."));
+            return;
+        }
+
+        cooldowns.put(player.getUniqueId(), now + cooldownMillis);
+
+        Location targetLocation = target.getLocation();
+        boolean damageEnabled = getConfig().getBoolean(
+                "lightning.damage-enabled", false
+        );
+
+        if (damageEnabled) {
+            target.getWorld().strikeLightning(targetLocation);
+        } else {
+            target.getWorld().strikeLightningEffect(targetLocation);
+        }
+
+        double damage = getConfig().getDouble("lightning.damage", 4.0);
+        if (damageEnabled && damage > 0.0) {
+            target.damage(damage, player);
+        }
+
+        if (stage >= 2) {
+            applyTargetDebuffs(target);
+        }
+
+        if (stage >= 3) {
+            applyWielderBuffs(player);
+        }
+
+        player.sendMessage(color("&bStorm Wand cast!"));
+    }
+
+    private LivingEntity findTarget(Player player, double range) {
+        Location eye = player.getEyeLocation();
+        Vector direction = eye.getDirection();
+
+        RayTraceResult result = player.getWorld().rayTraceEntities(
+                eye,
+                direction,
+                range,
+                0.3,
+                entity -> entity instanceof LivingEntity
+                        && entity != player
+        );
+
+        if (result == null || !(result.getHitEntity() instanceof LivingEntity living)) {
+            return null;
+        }
+
+        return living;
+    }
+
+    private void applyTargetDebuffs(LivingEntity target) {
+        int duration = getConfig().getInt("target-debuffs.duration-seconds", 10) * 20;
+
+        applyConfiguredEffect(
+                target,
+                "target-debuffs.slowness",
+                duration
+        );
+        applyConfiguredEffect(
+                target,
+                "target-debuffs.blindness",
+                duration
+        );
+    }
+
+    private void applyWielderBuffs(Player player) {
+        int duration = getConfig().getInt("wielder-buffs.duration-seconds", 10) * 20;
+
+        applyConfiguredEffect(player, "wielder-buffs.speed", duration);
+        applyConfiguredEffect(player, "wielder-buffs.strength", duration);
+    }
+
+    private void applyConfiguredEffect(
+            LivingEntity entity,
+            String path,
+            int durationTicks
+    ) {
+        String effectName = getConfig().getString(path + ".effect", "");
+        int amplifier = Math.max(0, getConfig().getInt(path + ".amplifier", 0));
+
+        PotionEffectType type = PotionEffectType.getByName(
+                effectName.toUpperCase()
+        );
+
+        if (type != null) {
+            entity.addPotionEffect(new PotionEffect(
+                    type,
+                    durationTicks,
+                    amplifier,
+                    true,
+                    true,
+                    true
+            ));
+        } else {
+            getLogger().warning("Unknown potion effect at config path " + path);
+        }
+    }
+
+    private void loadKills() {
+        if (!getDataFolder().exists() && !getDataFolder().mkdirs()) {
+            getLogger().warning("Could not create plugin data folder.");
+        }
+
+        killsFile = new File(getDataFolder(), "kills.yml");
+        if (!killsFile.exists()) {
+            try {
+                if (!killsFile.createNewFile()) {
+                    getLogger().warning("Could not create kills.yml.");
+                }
+            } catch (IOException exception) {
+                getLogger().severe("Could not create kills.yml: "
+                        + exception.getMessage());
+            }
+        }
+
+        killsConfig = org.bukkit.configuration.file.YamlConfiguration
+                .loadConfiguration(killsFile);
+
+        for (String playerId : killsConfig.getKeys(false)) {
+            try {
+                UUID killerId = UUID.fromString(playerId);
+                Set<UUID> victims = new HashSet<>();
+
+                List<String> savedVictims = killsConfig.getStringList(playerId);
+                for (String victimId : savedVictims) {
+                    try {
+                        victims.add(UUID.fromString(victimId));
+                    } catch (IllegalArgumentException ignored) {
+                        getLogger().warning("Ignoring invalid victim UUID in kills.yml.");
+                    }
+                }
+
+                uniqueVictims.put(killerId, victims);
+            } catch (IllegalArgumentException ignored) {
+                getLogger().warning("Ignoring invalid player UUID in kills.yml.");
+            }
+        }
+    }
+
+    private void saveKills() {
+        if (killsConfig == null || killsFile == null) {
+            return;
+        }
+
+        killsConfig.getKeys(false).forEach(killsConfig::set);
+
+        for (Map.Entry<UUID, Set<UUID>> entry : uniqueVictims.entrySet()) {
+            List<String> victims = entry.getValue().stream()
+                    .map(UUID::toString)
+                    .sorted()
                     .toList();
+            killsConfig.set(entry.getKey().toString(), victims);
         }
-        return List.of();
+
+        try {
+            killsConfig.save(killsFile);
+        } catch (IOException exception) {
+            getLogger().severe("Could not save kills.yml: "
+                    + exception.getMessage());
+        }
+    }
+
+    private String color(String text) {
+        return ChatColor.translateAlternateColorCodes('&', text);
     }
 }
