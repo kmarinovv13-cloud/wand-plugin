@@ -1,48 +1,45 @@
-cooldown-seconds: 60
-range: 30.0
-require-target: true
-affect-players: true
-affect-mobs: true
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+         https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
 
-self-effects:
-  speed:
-    duration-seconds: 10
-    level: 3
-  strength:
-    duration-seconds: 10
-    level: 3
+    <groupId>com.stormwand</groupId>
+    <artifactId>StormWand</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
 
-target-effects:
-  slowness:
-    duration-seconds: 10
-    level: 4
-  blindness:
-    duration-seconds: 10
-    level: 1
+    <properties>
+        <maven.compiler.release>21</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
 
-lightning:
-  real-lightning: false
-  damage: 4.0
+    <repositories>
+        <repository>
+            <id>papermc</id>
+            <url>https://repo.papermc.io/repository/maven-public/</url>
+        </repository>
+    </repositories>
 
-wand:
-  material: BLAZE_ROD
-  name: "<gradient:#ffd700:#8a2be2>Storm Wand"
-  lore:
-    - "<gray>Right-click to call down a storm"
-    - "<yellow>Empowers you, cripples your target"
-  glow: true
+    <dependencies>
+        <dependency>
+            <groupId>io.papermc.paper</groupId>
+            <artifactId>paper-api</artifactId>
+            <version>1.21.4-R0.1-SNAPSHOT</version>
+            <scope>provided</scope>
+        </dependency>
+    </dependencies>
 
-  stages:
-    "1":
-      item-model: "stormwand:storm_wand_stage_1"
-      custom-model-data: 101
-    "2":
-      item-model: "stormwand:storm_wand_stage_2"
-      custom-model-data: 102
-    "3":
-      item-model: "stormwand:storm_wand_stage_3"
-      custom-model-data: 103
-
-messages:
-  on-cooldown: "<red>Storm Wand recharging: <yellow><seconds>s"
-  no-target: "<gray>No target in range."
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.13.0</version>
+                <configuration>
+                    <release>21</release>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>
