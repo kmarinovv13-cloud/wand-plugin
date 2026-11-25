@@ -1,45 +1,97 @@
-<project xmlns="http://maven.apache.org/POM/4.0.0"
-         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
-         https://maven.apache.org/xsd/maven-4.0.0.xsd">
-    <modelVersion>4.0.0</modelVersion>
+# StormWand configuration
+# After editing, run /stormwand reload (no restart needed).
+# Wands update their name, lore and model automatically when a player reaches a new stage.
 
-    <groupId>com.stormwand</groupId>
-    <artifactId>StormWand</artifactId>
-    <version>1.0.0</version>
-    <packaging>jar</packaging>
+# Time before the same player can use the wand again (seconds).
+cooldown-seconds: 60
 
-    <properties>
-        <maven.compiler.release>21</maven.compiler.release>
-        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    </properties>
+# How far (in blocks) the wand can reach to find a target.
+range: 30.0
 
-    <repositories>
-        <repository>
-            <id>papermc</id>
-            <url>https://repo.papermc.io/repository/maven-public/</url>
-        </repository>
-    </repositories>
+# true  = the wand only fires (and only starts the cooldown) when it hits a target.
+# false = stage 3 players still get their buffs when nothing is in range.
+require-target: true
 
-    <dependencies>
-        <dependency>
-            <groupId>io.papermc.paper</groupId>
-            <artifactId>paper-api</artifactId>
-            <version>1.21.4-R0.1-SNAPSHOT</version>
-            <scope>provided</scope>
-        </dependency>
-    </dependencies>
+# What the wand is allowed to hit.
+affect-players: true
+affect-mobs: true
 
-    <build>
-        <plugins>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-compiler-plugin</artifactId>
-                <version>3.13.0</version>
-                <configuration>
-                    <release>21</release>
-                </configuration>
-            </plugin>
-        </plugins>
-    </build>
-</project>
+# Progress needed (player kills, any weapon) to unlock each ability.
+#   Stage 1 (start):         lightning only
+#   Stage 2 (>= debuffs):    lightning + debuffs on the target
+#   Stage 3 (>= buffs):      lightning + debuffs + buffs for you
+# unique-victims-only: true  = only kills of DIFFERENT players count (killing the same
+#                              player again does not add progress)
+#                      false = every player kill counts
+progression:
+  kills-for-debuffs: 1
+  kills-for-buffs: 3
+  unique-victims-only: true
+
+# Effects the person holding the wand receives (unlocked at stage 3).
+# The key is the vanilla effect name (speed, strength, resistance, regeneration, ...).
+# level: 3 means "level III" in-game.
+self-effects:
+  speed:
+    duration-seconds: 10
+    level: 3
+  strength:
+    duration-seconds: 10
+    level: 3
+
+# Effects the target receives (unlocked at stage 2). You can add more, e.g. weakness or poison.
+target-effects:
+  slowness:
+    duration-seconds: 10
+    level: 4
+  blindness:
+    duration-seconds: 10
+    level: 1
+
+lightning:
+  # false = visual lightning + the custom damage below (no fire, no vanilla lightning damage)
+  # true  = real vanilla lightning (sets fire, vanilla damage); the custom damage is skipped
+  real-lightning: false
+  # Damage dealt by the lightning (2.0 = one heart). Set 0 for no damage.
+  damage: 4.0
+
+wand:
+  # Base item of the wand.
+  material: BLAZE_ROD
+  # Names and lore use MiniMessage formatting.
+  # Each stage has its own look. Leave item-model empty and custom-model-data at 0
+  # until your resource pack is ready.
+  #   item-model: "stormwand:storm_wand_1"   (1.21.4+ resource packs)
+  #   custom-model-data: 1                   (older style, a number)
+  stages:
+    stage-1:
+      name: "<gradient:#ffd700:#8a2be2>Storm Wand <gray>[I]"
+      lore:
+        - "<gray>Right-click to call down lightning"
+        - "<dark_gray>Kill a player to unlock more power"
+      glow: true
+      custom-model-data: 0
+      item-model: ""
+    stage-2:
+      name: "<gradient:#ffd700:#8a2be2>Storm Wand <aqua>[II]"
+      lore:
+        - "<gray>Lightning that slows and blinds"
+        - "<dark_gray>Kill 3 different players for the final power"
+      glow: true
+      custom-model-data: 0
+      item-model: ""
+    stage-3:
+      name: "<gradient:#ffd700:#8a2be2>Storm Wand <light_purple>[III]"
+      lore:
+        - "<gray>Lightning, debuffs, and storm power for you"
+        - "<yellow>Fully awakened"
+      glow: true
+      custom-model-data: 0
+      item-model: ""
+
+messages:
+  on-cooldown: "<red>Storm Wand recharging: <yellow><seconds>s"
+  no-target: "<gray>No target in range."
+  already-counted: "<gray>You already counted this player. Kill someone new for progress."
+  unlocked-debuffs: "<gold>Storm Wand: <yellow>Debuffs unlocked! <gray>Your target is now slowed and blinded."
+  unlocked-buffs: "<gold>Storm Wand: <yellow>Final power unlocked! <gray>You now gain speed and strength too."
