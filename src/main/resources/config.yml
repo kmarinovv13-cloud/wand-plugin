@@ -1,0 +1,64 @@
+# StormWand configuration
+# After editing, run /stormwand reload (no restart needed).
+# Wand appearance changes (name, lore, model) only apply to wands given AFTER the change,
+# so use /stormwand give again to get an updated wand.
+
+# Time before the same player can use the wand again (seconds).
+cooldown-seconds: 60
+
+# How far (in blocks) the wand can reach to find a target.
+range: 30.0
+
+# true  = the wand only fires (and only starts the cooldown) when it hits a target.
+# false = you still get your buffs when nothing is in range.
+require-target: true
+
+# What the wand is allowed to hit.
+affect-players: true
+affect-mobs: true
+
+# Effects the person holding the wand receives.
+# The key is the vanilla effect name (speed, strength, resistance, regeneration, ...).
+# level: 3 means "level III" in-game.
+self-effects:
+  speed:
+    duration-seconds: 10
+    level: 3
+  strength:
+    duration-seconds: 10
+    level: 3
+
+# Effects the target receives. You can add more, e.g. weakness or poison.
+target-effects:
+  slowness:
+    duration-seconds: 10
+    level: 4
+  blindness:
+    duration-seconds: 10
+    level: 1
+
+lightning:
+  # false = visual lightning + the custom damage below (no fire, no vanilla lightning damage)
+  # true  = real vanilla lightning (sets fire, vanilla damage); the custom damage is skipped
+  real-lightning: false
+  # Damage dealt by the lightning (2.0 = one heart). Set 0 for no damage.
+  damage: 4.0
+
+wand:
+  # Base item of the wand.
+  material: BLAZE_ROD
+  # Names and lore use MiniMessage formatting.
+  name: "<gradient:#ffd700:#8a2be2>Storm Wand"
+  lore:
+    - "<gray>Right-click to call down a storm"
+    - "<yellow>Empowers you, cripples your target"
+  # Enchantment glint on the wand.
+  glow: true
+  # For a custom texture with a resource pack. 0 = not used.
+  custom-model-data: 0
+  # Alternative for 1.21.4+ resource packs, e.g. "stormwand:storm_wand". Empty = not used.
+  item-model: ""
+
+messages:
+  on-cooldown: "<red>Storm Wand recharging: <yellow><seconds>s"
+  no-target: "<gray>No target in range."
