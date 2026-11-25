@@ -1,20 +1,19 @@
 name: StormWand
-version: '1.0.0'
+version: 1.0.0
 main: com.stormwand.StormWand
 api-version: '1.21'
-description: A configurable wand that buffs you and strikes your target with lightning.
 commands:
   stormwand:
-    description: Give the Storm Wand or reload the config
-    usage: /stormwand <give [player]|reload>
+    description: Give a Storm Wand or reload the plugin configuration.
+    usage: /stormwand <give <player>|reload>
     aliases: [swand]
 permissions:
   stormwand.use:
-    description: Allows using the Storm Wand
+    description: Allows the player to use a Storm Wand.
     default: true
   stormwand.give:
-    description: Allows giving the Storm Wand
+    description: Allows the player to give Storm Wands.
     default: op
   stormwand.reload:
-    description: Allows reloading the config
+    description: Allows the player to reload StormWand configuration.
     default: op
