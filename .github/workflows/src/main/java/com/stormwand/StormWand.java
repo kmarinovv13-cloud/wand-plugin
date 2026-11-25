@@ -17,6 +17,7 @@ import org.bukkit.command.PluginCommand;
 import org.bukkit.command.TabExecutor;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.FileConfiguration;
+import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.ArmorStand;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.LivingEntity;
@@ -24,6 +25,7 @@ import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
+import org.bukkit.event.entity.EntityDeathEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.ItemStack;
@@ -34,8 +36,9 @@ import org.bukkit.potion.PotionEffect;
 import org.bukkit.potion.PotionEffectType;
 import org.bukkit.util.RayTraceResult;
 
+import java.io.File;
+import java.io.IOException;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -46,12 +49,25 @@ public final class StormWand extends JavaPlugin implements Listener, TabExecutor
     private static final MiniMessage MM = MiniMessage.miniMessage();
 
     private NamespacedKey wandKey;
-    private final Map<UUID, Long> cooldowns = new HashMap<>();
+    private File killsFile;
+    private FileConfiguration killsData;
 
     @Override
     public void onEnable() {
         saveDefaultConfig();
+
         wandKey = new NamespacedKey(this, "storm_wand");
+        killsFile = new File(getDataFolder(), "kills.yml");
+        if (!killsFile.exists()) {
+            try {
+                getDataFolder().mkdirs();
+                killsFile.createNewFile();
+            } catch (IOException e) {
+                getLogger().severe("Could not create kills.yml: " + e.getMessage());
+            }
+        }
+        killsData = YamlConfiguration.loadConfiguration(killsFile);
+
         getServer().getPluginManager().registerEvents(this, this);
 
         PluginCommand command = getCommand("stormwand");
@@ -61,22 +77,57 @@ public final class StormWand extends JavaPlugin implements Listener, TabExecutor
         }
     }
 
-    // ------------------------------------------------------------------ item
+    private int getKills(Player player) {
+        return killsData.getInt(player.getUniqueId().toString(), 0);
+    }
 
-    @SuppressWarnings("deprecation")
-    private ItemStack createWand() {
+    private int getStage(int kills) {
+        if (kills >= 10) return 3;
+        if (kills >= 5) return 2;
+        return 1;
+    }
+
+    private void saveKills() {
+        try {
+            killsData.save(killsFile);
+        } catch (IOException e) {
+            getLogger().severe("Could not save kills.yml: " + e.getMessage());
+        }
+    }
+
+    @EventHandler
+    public void onEntityDeath(EntityDeathEvent event) {
+        Player killer = event.getEntity().getKiller();
+        if (killer == null) return;
+
+        UUID id = killer.getUniqueId();
+        int newKills = getKills(killer) + 1;
+        killsData.set(id.toString(), newKills);
+        saveKills();
+
+        // Update the model of any Storm Wands in the killer's inventory.
+        updateWands(killer, getStage(newKills));
+
+        if (newKills == 5 || newKills == 10) {
+            killer.sendMessage(Component.text(
+                    "Storm Wand upgraded to Stage " + getStage(newKills)
+                            + " after " + newKills + " kills!"));
+        }
+    }
+
+    private ItemStack createWand(int stage) {
         FileConfiguration cfg = getConfig();
 
         Material material = Material.matchMaterial(cfg.getString("wand.material", "BLAZE_ROD"));
         if (material == null || material.isAir() || !material.isItem()) {
-            getLogger().warning("Invalid wand.material in config, using BLAZE_ROD.");
             material = Material.BLAZE_ROD;
         }
 
         ItemStack item = new ItemStack(material);
         ItemMeta meta = item.getItemMeta();
 
-        meta.displayName(noItalic(MM.deserialize(cfg.getString("wand.name", "<gold>Storm Wand"))));
+        meta.displayName(noItalic(MM.deserialize(
+                cfg.getString("wand.name", "<gold>Storm Wand"))));
 
         List<Component> lore = new ArrayList<>();
         for (String line : cfg.getStringList("wand.lore")) {
@@ -88,67 +139,73 @@ public final class StormWand extends JavaPlugin implements Listener, TabExecutor
             meta.setEnchantmentGlintOverride(true);
         }
 
-        int modelData = cfg.getInt("wand.custom-model-data", 0);
+        int modelData = cfg.getInt("wand.stages." + stage + ".custom-model-data", 0);
         if (modelData > 0) {
-            try {
-                meta.setCustomModelData(modelData);
-            } catch (Throwable t) {
-                getLogger().warning("custom-model-data is not supported on this server version.");
-            }
+            meta.setCustomModelData(modelData);
         }
 
-        String model = cfg.getString("wand.item-model", "");
-        if (model != null && !model.isBlank()) {
-            NamespacedKey key = NamespacedKey.fromString(model.trim());
-            if (key == null) {
-                getLogger().warning("wand.item-model is not a valid key: " + model);
-            } else {
-                try {
-                    meta.setItemModel(key);
-                } catch (Throwable t) {
-                    getLogger().warning("item-model is not supported on this server version.");
-                }
-            }
-        }
-
+        setStageItemModel(meta, stage);
         meta.getPersistentDataContainer().set(wandKey, PersistentDataType.BYTE, (byte) 1);
         item.setItemMeta(meta);
         return item;
     }
 
-    private boolean isWand(ItemStack item) {
-        if (item == null || !item.hasItemMeta()) {
-            return false;
+    private void setStageItemModel(ItemMeta meta, int stage) {
+        String model = getConfig().getString("wand.stages." + stage + ".item-model", "");
+        if (model == null || model.isBlank()) return;
+
+        NamespacedKey key = NamespacedKey.fromString(model.trim());
+        if (key == null) {
+            getLogger().warning("Invalid item model for wand stage " + stage + ": " + model);
+            return;
         }
-        return item.getItemMeta().getPersistentDataContainer().has(wandKey, PersistentDataType.BYTE);
+        meta.setItemModel(key);
+    }
+
+    private void updateWands(Player player, int stage) {
+        ItemStack[] contents = player.getInventory().getContents();
+        for (int i = 0; i < contents.length; i++) {
+            ItemStack item = contents[i];
+            if (!isWand(item)) continue;
+
+            ItemMeta meta = item.getItemMeta();
+            int modelData = getConfig().getInt("wand.stages." + stage + ".custom-model-data", 0);
+            if (modelData > 0) {
+                meta.setCustomModelData(modelData);
+            }
+            setStageItemModel(meta, stage);
+            item.setItemMeta(meta);
+        }
+        player.getInventory().setContents(contents);
+    }
+
+    private boolean isWand(ItemStack item) {
+        return item != null
+                && item.hasItemMeta()
+                && item.getItemMeta().getPersistentDataContainer()
+                        .has(wandKey, PersistentDataType.BYTE);
     }
 
     private static Component noItalic(Component component) {
-        return component.decorationIfAbsent(TextDecoration.ITALIC, TextDecoration.State.FALSE);
+        return component.decorationIfAbsent(
+                TextDecoration.ITALIC, TextDecoration.State.FALSE);
     }
-
-    // ------------------------------------------------------------------ casting
 
     @EventHandler
     public void onInteract(PlayerInteractEvent event) {
-        if (event.getHand() != EquipmentSlot.HAND) {
-            return;
-        }
+        if (event.getHand() != EquipmentSlot.HAND) return;
+
         Action action = event.getAction();
-        if (action != Action.RIGHT_CLICK_AIR && action != Action.RIGHT_CLICK_BLOCK) {
-            return;
-        }
+        if (action != Action.RIGHT_CLICK_AIR && action != Action.RIGHT_CLICK_BLOCK) return;
 
         Player player = event.getPlayer();
-        if (!isWand(player.getInventory().getItemInMainHand())) {
-            return;
-        }
+        if (!isWand(player.getInventory().getItemInMainHand())) return;
 
         event.setCancelled(true);
+        if (!player.hasPermission("stormwand.use")) return;
 
-        if (!player.hasPermission("stormwand.use")) {
-            return;
-        }
+        // Keep the model in sync if the player earned kills before receiving this wand.
+        updateWands(player, getStage(getKills(player)));
         cast(player);
     }
 
@@ -156,10 +213,12 @@ public final class StormWand extends JavaPlugin implements Listener, TabExecutor
         FileConfiguration cfg = getConfig();
         long now = System.currentTimeMillis();
 
-        long readyAt = cooldowns.getOrDefault(player.getUniqueId(), 0L);
+        long readyAt = getConfig().getLong(
+                "cooldowns." + player.getUniqueId(), 0L);
         if (now < readyAt) {
             long secondsLeft = (long) Math.ceil((readyAt - now) / 1000.0);
-            player.sendActionBar(message("messages.on-cooldown",
+            player.sendActionBar(message(
+                    "messages.on-cooldown",
                     "<red>Storm Wand recharging: <yellow><seconds>s",
                     Placeholder.unparsed("seconds", String.valueOf(secondsLeft))));
             return;
@@ -171,17 +230,26 @@ public final class StormWand extends JavaPlugin implements Listener, TabExecutor
             return;
         }
 
-        // Buffs for the wielder.
-        applyEffects(player, cfg.getConfigurationSection("self-effects"));
+        int stage = getStage(getKills(player));
 
-        // Lightning and debuffs for the target.
+        // Lightning is available from the start.
         if (target != null) {
             strike(player, target);
-            applyEffects(target, cfg.getConfigurationSection("target-effects"));
+
+            // Stage 2: target debuffs, unlocked at 5 kills.
+            if (stage >= 2) {
+                applyEffects(target, cfg.getConfigurationSection("target-effects"));
+            }
+        }
+
+        // Stage 3: wielder buffs, unlocked at 10 kills.
+        if (stage >= 3) {
+            applyEffects(player, cfg.getConfigurationSection("self-effects"));
         }
 
         long cooldownMillis = (long) (cfg.getDouble("cooldown-seconds", 60.0) * 1000.0);
-        cooldowns.put(player.getUniqueId(), now + cooldownMillis);
+        getConfig().set("cooldowns." + player.getUniqueId(), now + cooldownMillis);
+        saveConfig();
     }
 
     private LivingEntity findTarget(Player player) {
@@ -192,28 +260,17 @@ public final class StormWand extends JavaPlugin implements Listener, TabExecutor
 
         Location eye = player.getEyeLocation();
         RayTraceResult result = player.getWorld().rayTrace(
-                eye,
-                eye.getDirection(),
-                range,
-                FluidCollisionMode.NEVER,
-                true,
-                0.3,
-                entity -> {
-                    if (entity.equals(player) || !(entity instanceof LivingEntity)) {
-                        return false;
-                    }
-                    if (entity instanceof ArmorStand) {
-                        return false;
-                    }
+                eye, eye.getDirection(), range, FluidCollisionMode.NEVER,
+                true, 0.3, entity -> {
+                    if (entity.equals(player) || !(entity instanceof LivingEntity)) return false;
+                    if (entity instanceof ArmorStand) return false;
                     if (entity instanceof Player other) {
                         return hitPlayers && other.getGameMode() != GameMode.SPECTATOR;
                     }
                     return hitMobs;
                 });
 
-        if (result == null) {
-            return null;
-        }
+        if (result == null) return null;
         Entity hit = result.getHitEntity();
         return hit instanceof LivingEntity living ? living : null;
     }
@@ -227,43 +284,37 @@ public final class StormWand extends JavaPlugin implements Listener, TabExecutor
         } else {
             target.getWorld().strikeLightningEffect(location);
             double damage = cfg.getDouble("lightning.damage", 4.0);
-            if (damage > 0) {
-                target.damage(damage, caster);
-            }
+            if (damage > 0) target.damage(damage, caster);
         }
     }
 
     private void applyEffects(LivingEntity entity, ConfigurationSection section) {
-        if (section == null) {
-            return;
-        }
+        if (section == null) return;
+
         for (String name : section.getKeys(false)) {
             ConfigurationSection effect = section.getConfigurationSection(name);
-            if (effect == null) {
-                continue;
+            if (effect == null) continue;
+
+            PotionEffectType type;
+            try {
+                type = PotionEffectType.getByKey(
+                        NamespacedKey.minecraft(name.toLowerCase(Locale.ROOT)));
+            } catch (IllegalArgumentException e) {
+                type = null;
             }
 
-            PotionEffectType type = null;
-            try {
-                type = PotionEffectType.getByKey(NamespacedKey.minecraft(name.toLowerCase(Locale.ROOT)));
-            } catch (IllegalArgumentException ignored) {
-                // falls through to the warning below
-            }
             if (type == null) {
                 getLogger().warning("Unknown potion effect in config: " + name);
                 continue;
             }
 
-            int ticks = (int) Math.round(effect.getDouble("duration-seconds", 10.0) * 20.0);
+            int ticks = (int) Math.round(
+                    effect.getDouble("duration-seconds", 10.0) * 20.0);
             int amplifier = Math.max(1, effect.getInt("level", 1)) - 1;
-            if (ticks <= 0) {
-                continue;
-            }
+            if (ticks <= 0) continue;
 
             entity.addPotionEffect(new PotionEffect(
-                    type,
-                    ticks,
-                    amplifier,
+                    type, ticks, amplifier,
                     effect.getBoolean("ambient", false),
                     effect.getBoolean("particles", true),
                     effect.getBoolean("icon", true)));
@@ -274,10 +325,9 @@ public final class StormWand extends JavaPlugin implements Listener, TabExecutor
         return MM.deserialize(getConfig().getString(path, fallback), resolvers);
     }
 
-    // ------------------------------------------------------------------ commands
-
     @Override
-    public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+    public boolean onCommand(
+            CommandSender sender, Command command, String label, String[] args) {
         if (args.length == 0) {
             sender.sendMessage(Component.text("Usage: /stormwand <give [player]|reload>"));
             return true;
@@ -297,6 +347,7 @@ public final class StormWand extends JavaPlugin implements Listener, TabExecutor
                     sender.sendMessage(Component.text("You don't have permission to do that."));
                     return true;
                 }
+
                 Player target;
                 if (args.length > 1) {
                     target = Bukkit.getPlayerExact(args[1]);
@@ -305,26 +356,35 @@ public final class StormWand extends JavaPlugin implements Listener, TabExecutor
                 } else {
                     target = null;
                 }
+
                 if (target == null) {
-                    sender.sendMessage(Component.text("Player not found. Usage: /stormwand give <player>"));
+                    sender.sendMessage(Component.text(
+                            "Player not found. Usage: /stormwand give <player>"));
                     return true;
                 }
-                Map<Integer, ItemStack> leftover = target.getInventory().addItem(createWand());
+
+                int stage = getStage(getKills(target));
+                Map<Integer, ItemStack> leftover =
+                        target.getInventory().addItem(createWand(stage));
                 for (ItemStack extra : leftover.values()) {
                     target.getWorld().dropItemNaturally(target.getLocation(), extra);
                 }
-                sender.sendMessage(Component.text("Gave the Storm Wand to " + target.getName() + "."));
+                sender.sendMessage(Component.text(
+                        "Gave the Storm Wand to " + target.getName() + "."));
             }
-            default -> sender.sendMessage(Component.text("Usage: /stormwand <give [player]|reload>"));
+            default -> sender.sendMessage(Component.text(
+                    "Usage: /stormwand <give [player]|reload>"));
         }
         return true;
     }
 
     @Override
-    public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
+    public List<String> onTabComplete(
+            CommandSender sender, Command command, String alias, String[] args) {
         if (args.length == 1) {
             String typed = args[0].toLowerCase(Locale.ROOT);
-            return List.of("give", "reload").stream().filter(s -> s.startsWith(typed)).toList();
+            return List.of("give", "reload").stream()
+                    .filter(s -> s.startsWith(typed)).toList();
         }
         if (args.length == 2 && args[0].equalsIgnoreCase("give")) {
             String typed = args[1].toLowerCase(Locale.ROOT);
